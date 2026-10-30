@@ -1,5 +1,6 @@
-import { db } from './demo/store'
-import type { CompanyDocument, PaginatedResult } from '@/types/domain'
+import { db, getActiveSession } from './demo/store'
+import type { CompanyDocument, PaginatedResult, SessionUser } from '@/types/domain'
+import { hasPermission } from '@/types/rbac'
 
 export interface DepartmentAttendanceReportRow {
   department: string
@@ -17,15 +18,39 @@ export interface AttendanceReportSummary {
   totals: DepartmentAttendanceReportRow
 }
 
+function resolveViewer(viewer?: SessionUser | null): SessionUser | null {
+  return viewer !== undefined ? viewer : getActiveSession()
+}
+
+export function canViewerAccessDocument(doc: CompanyDocument, viewer?: SessionUser | null): boolean {
+  const v = resolveViewer(viewer)
+  if (!v) return false
+  if (doc.visibility === 'HR & Super Admin') {
+    return v.role === 'SUPER_ADMIN' || v.role === 'HR_ADMIN' || hasPermission(v, 'employees.view')
+  }
+  return true
+}
+
 export const documentService = {
   async categories(): Promise<string[]> {
     return ['Handbook', 'Policy', 'Template', 'Compliance']
   },
 
-  async list(params: { category?: string; page?: number; pageSize?: number } = {}): Promise<PaginatedResult<CompanyDocument>> {
+  async list(
+    params: { category?: string; page?: number; pageSize?: number } = {},
+    viewer?: SessionUser | null,
+  ): Promise<PaginatedResult<CompanyDocument>> {
+    const v = resolveViewer(viewer)
+    if (!v) {
+      throw new Error('Unauthorized: Authentication required to view company documents.')
+    }
     const page = params.page ?? 1
     const pageSize = params.pageSize ?? 12
-    const filtered = db.documents.filter((d) => (params.category ? d.category === params.category : true))
+    const filtered = db.documents.filter((d) => {
+      if (!canViewerAccessDocument(d, v)) return false
+      if (params.category && d.category !== params.category) return false
+      return true
+    })
     const start = (page - 1) * pageSize
     return {
       items: filtered.slice(start, start + pageSize),
@@ -35,15 +60,30 @@ export const documentService = {
     }
   },
 
-  async get(documentId: string): Promise<CompanyDocument> {
+  async get(documentId: string, viewer?: SessionUser | null): Promise<CompanyDocument> {
+    const v = resolveViewer(viewer)
+    if (!v) {
+      throw new Error('Unauthorized: Authentication required to view company documents.')
+    }
     const found = db.documents.find((d) => d.id === documentId)
     if (!found) throw new Error(`Document ${documentId} not found`)
+    if (!canViewerAccessDocument(found, v)) {
+      throw new Error('Unauthorized: This document is restricted to HR Admin and Super Admin.')
+    }
     return found
   },
 }
 
 export const reportService = {
-  async attendanceByDepartment(_fromDate: string, _toDate: string): Promise<AttendanceReportSummary> {
+  async attendanceByDepartment(
+    _fromDate: string,
+    _toDate: string,
+    viewer?: SessionUser | null,
+  ): Promise<AttendanceReportSummary> {
+    const v = resolveViewer(viewer)
+    if (!v || !hasPermission(v, 'reports.view')) {
+      throw new Error('Unauthorized: You do not have permission to view department attendance reports.')
+    }
     const depts = [...new Set(db.employees.map((e) => e.department))].sort()
     const rows: DepartmentAttendanceReportRow[] = depts.map((department) => {
       const att = db.attendance.filter((r) => r.department === department)

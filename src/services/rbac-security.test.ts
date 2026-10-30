@@ -296,4 +296,354 @@ describe('RBAC, Project/Team Hierarchy, Delegated Tasks & Lifecycle Governance',
     const anjaliPayslip = await payrollService.latestForEmployee('EMP-008', anjaliMemberSession)
     expect(anjaliPayslip).toBeNull()
   })
+
+  it('restricts company payroll runs and transitions strictly to Super Admin (blocking HR Admin and Employee)', async () => {
+    await expect(payrollService.runs('', 1, 10, hrAdminSession)).rejects.toThrow(/Unauthorized/i)
+    await expect(payrollService.run('RUN-2026-10', hrAdminSession)).rejects.toThrow(/Unauthorized/i)
+    await expect(payrollService.runPayslips('RUN-2026-10', {}, hrAdminSession)).rejects.toThrow(/Unauthorized/i)
+    await expect(payrollService.transition('RUN-2026-10', 'approve', 'HR attempt', hrAdminSession)).rejects.toThrow(
+      /Unauthorized/i,
+    )
+    await expect(payrollService.payslips({ employeeId: 'EMP-001' }, hrAdminSession)).rejects.toThrow(/Unauthorized/i)
+
+    // Super Admin can access payroll runs
+    const superRuns = await payrollService.runs('', 1, 10, superAdminSession)
+    expect(superRuns.items.length).toBeGreaterThan(0)
+  })
+
+  it('fails closed when service methods are called without an authenticated session or actor role', async () => {
+    await expect(
+      settingsService.assignEmployeeRole({
+        employeeId: 'EMP-004',
+        role: 'SUPER_ADMIN',
+        reason: 'Missing actorRole',
+      }),
+    ).rejects.toThrow(/Only Super Admin/i)
+
+    await expect(
+      employeeService.terminate('EMP-006', {
+        reason: 'Missing actorRole',
+      }),
+    ).rejects.toThrow(/Unauthorized/i)
+
+    // Unauthenticated get redacts PII by default
+    const unauthEmployee = await employeeService.get('EMP-001', null)
+    expect(unauthEmployee.personalEmail).toBe('Protected (HR only)')
+
+    const unauthTasks = await taskService.list({}, null)
+    expect(unauthTasks).toHaveLength(0)
+  })
+
+  it('enforces RBAC and lifecycle state guards on employeeService.changeStatus', async () => {
+    // Ordinary employee cannot change status
+    await expect(
+      employeeService.changeStatus('EMP-008', 'ACTIVE', 'Self promotion from probation', {
+        name: anjaliMemberSession.name,
+        role: 'EMPLOYEE',
+      }),
+    ).rejects.toThrow(/Unauthorized/i)
+
+    // HR Admin cannot change status of a Super Admin or HR Admin
+    await expect(
+      employeeService.changeStatus('EMP-001', 'PROBATION', 'HR modifying Super Admin status', {
+        name: hrAdminSession.name,
+        role: 'HR_ADMIN',
+      }),
+    ).rejects.toThrow(/Unauthorized/i)
+
+    // Terminate EMP-006, then verify changeStatus cannot bypass formal reactivation
+    await employeeService.terminate('EMP-006', {
+      reason: 'Contract ended',
+      actor: hrAdminSession.name,
+      actorRole: 'HR_ADMIN',
+    })
+    await expect(
+      employeeService.changeStatus('EMP-006', 'ACTIVE', 'Bypass reactivation via changeStatus', {
+        name: hrAdminSession.name,
+        role: 'HR_ADMIN',
+      }),
+    ).rejects.toThrow(/Cannot change status of a terminated/i)
+
+    // Restore EMP-006 via formal reactivation
+    await employeeService.reactivate('EMP-006', 'Formal reinstatement', {
+      name: superAdminSession.name,
+      role: 'SUPER_ADMIN',
+    })
+  })
+
+  it('enforces document visibility so HR & Super Admin documents are hidden and blocked for Employees', async () => {
+    const { documentService } = await import('./documents')
+
+    const employeeDocs = await documentService.list({}, anjaliMemberSession)
+    expect(employeeDocs.items.some((d) => d.id === 'DOC-04')).toBe(false)
+    await expect(documentService.get('DOC-04', anjaliMemberSession)).rejects.toThrow(/Unauthorized/i)
+
+    const hrDocs = await documentService.list({}, hrAdminSession)
+    expect(hrDocs.items.some((d) => d.id === 'DOC-04')).toBe(true)
+    const doc4 = await documentService.get('DOC-04', hrAdminSession)
+    expect(doc4.id).toBe('DOC-04')
+  })
+
+  it('scopes global search (searchEverything) to the viewer permissions and assigned projects/tasks', async () => {
+    // PRJ-03 ("Brand & Talent Portal Revamp") and TSK-106 are not accessible to Anjali (EMP-008)
+    const anjaliProjectSearch = await settingsService.searchEverything('Brand & Talent Portal', anjaliMemberSession)
+    expect(anjaliProjectSearch).toHaveLength(0)
+
+    // Super Admin can find PRJ-03 in global search
+    const adminProjectSearch = await settingsService.searchEverything('Brand & Talent Portal', superAdminSession)
+    expect(adminProjectSearch.some((r) => r.label.includes('Brand & Talent Portal Revamp'))).toBe(true)
+  })
+
+  it('enforces settingsService permissions for updateCompanyProfile, users, and audit (including unauthenticated fail-closed)', async () => {
+    const { setActiveSession } = await import('./demo/store')
+    setActiveSession(null)
+
+    // Unauthenticated calls fail closed
+    expect(() => settingsService.updateCompanyProfile({ shortName: 'Unauthorized' }, { viewer: null })).toThrow(
+      /Unauthorized/i,
+    )
+    await expect(settingsService.users('', 1, 10, null)).rejects.toThrow(/Unauthorized/i)
+    await expect(settingsService.audit({}, null)).rejects.toThrow(/Unauthorized/i)
+
+    // Employee lacks settings.company, settings.users, and settings.audit
+    expect(() =>
+      settingsService.updateCompanyProfile({ shortName: 'EmployeeHack' }, { viewer: anjaliMemberSession }),
+    ).toThrow(/Unauthorized/i)
+    await expect(settingsService.users('', 1, 10, anjaliMemberSession)).rejects.toThrow(/Unauthorized/i)
+    await expect(settingsService.audit({}, anjaliMemberSession)).rejects.toThrow(/Unauthorized/i)
+
+    // HR Admin has settings.company, settings.users, and settings.audit
+    const hrUsers = await settingsService.users('', 1, 10, hrAdminSession)
+    expect(hrUsers.items.length).toBeGreaterThan(0)
+    const updatedCompany = settingsService.updateCompanyProfile(
+      { shortName: 'ZeroInfinity' },
+      { viewer: hrAdminSession },
+    )
+    expect(updatedCompany.shortName).toBe('ZeroInfinity')
+    const hrAudit = await settingsService.audit({ page: 1, pageSize: 5 }, hrAdminSession)
+    expect(hrAudit.items.length).toBeGreaterThan(0)
+
+    // Super Admin also has settings.audit
+    const superAudit = await settingsService.audit({ page: 1, pageSize: 5 }, superAdminSession)
+    expect(superAudit.items.length).toBeGreaterThan(0)
+  })
+
+  it('enforces recruitmentService view and manage permissions and fails closed when unauthenticated', async () => {
+    const { recruitmentService } = await import('./recruitment')
+    const { setActiveSession } = await import('./demo/store')
+    setActiveSession(null)
+
+    // Unauthenticated calls fail closed
+    await expect(recruitmentService.jobs('', '', null)).rejects.toThrow(/Unauthorized/i)
+    await expect(recruitmentService.candidates('', '', null)).rejects.toThrow(/Unauthorized/i)
+    await expect(recruitmentService.interviews(null)).rejects.toThrow(/Unauthorized/i)
+    await expect(recruitmentService.moveCandidateStage('CND-01', 'SCREENING', null)).rejects.toThrow(/Unauthorized/i)
+
+    // Employee lacks recruitment.view and recruitment.manage
+    await expect(recruitmentService.jobs('', '', anjaliMemberSession)).rejects.toThrow(/Unauthorized/i)
+    await expect(recruitmentService.candidates('', '', anjaliMemberSession)).rejects.toThrow(/Unauthorized/i)
+    await expect(recruitmentService.interviews(anjaliMemberSession)).rejects.toThrow(/Unauthorized/i)
+    await expect(
+      recruitmentService.moveCandidateStage('CND-01', 'SCREENING', anjaliMemberSession),
+    ).rejects.toThrow(/Unauthorized/i)
+
+    // HR Admin and Super Admin have recruitment.view and recruitment.manage
+    const hrJobs = await recruitmentService.jobs('', '', hrAdminSession)
+    expect(hrJobs.length).toBeGreaterThan(0)
+    const hrCandidates = await recruitmentService.candidates('', '', hrAdminSession)
+    expect(hrCandidates.length).toBeGreaterThan(0)
+    const hrInterviews = await recruitmentService.interviews(hrAdminSession)
+    expect(hrInterviews.length).toBeGreaterThan(0)
+
+    const targetCandidate = hrCandidates[0]!
+    const originalStage = targetCandidate.stage
+    const moved = await recruitmentService.moveCandidateStage(targetCandidate.id, 'TECHNICAL', hrAdminSession)
+    expect(moved.stage).toBe('TECHNICAL')
+    await recruitmentService.moveCandidateStage(targetCandidate.id, originalStage, superAdminSession)
+  })
+
+  it('requires reports.view for reportService.attendanceByDepartment', async () => {
+    const { reportService } = await import('./documents')
+    const { setActiveSession } = await import('./demo/store')
+    setActiveSession(null)
+
+    await expect(reportService.attendanceByDepartment('2026-10-01', db.today, null)).rejects.toThrow(/Unauthorized/i)
+    await expect(
+      reportService.attendanceByDepartment('2026-10-01', db.today, anjaliMemberSession),
+    ).rejects.toThrow(/Unauthorized/i)
+
+    const hrReport = await reportService.attendanceByDepartment('2026-10-01', db.today, hrAdminSession)
+    expect(hrReport.rows.length).toBeGreaterThan(0)
+  })
+
+  it('restricts reactivation of ARCHIVED employees exclusively to SUPER_ADMIN', async () => {
+    // Archive EMP-006 as Super Admin
+    const archived = await employeeService.deletePermanently('EMP-006', 'Archiving record for compliance test', {
+      name: superAdminSession.name,
+      role: 'SUPER_ADMIN',
+    })
+    expect(archived.status).toBe('ARCHIVED')
+
+    // HR Admin attempting to reactivate an ARCHIVED employee must fail with an authorization error
+    await expect(
+      employeeService.reactivate('EMP-006', 'HR trying to unarchive', {
+        name: hrAdminSession.name,
+        role: 'HR_ADMIN',
+      }),
+    ).rejects.toThrow(/Only a Super Admin can reactivate an archived employee/i)
+
+    // Super Admin can reactivate an ARCHIVED employee
+    const reactivated = await employeeService.reactivate('EMP-006', 'Super Admin restoring archived record', {
+      name: superAdminSession.name,
+      role: 'SUPER_ADMIN',
+    })
+    expect(reactivated.status).toBe('ACTIVE')
+    expect(reactivated.archivedAt).toBeUndefined()
+  })
+
+  it('validates cached active sessions against live account status and refreshes outdated roles in getActiveSession', async () => {
+    const { getActiveSession, setActiveSession } = await import('./demo/store')
+
+    const minaSession: SessionUser = {
+      userId: 'USR-006',
+      employeeId: 'EMP-006',
+      name: 'Mina Tamang',
+      email: 'mina.tamang@zeroinfinity.tech',
+      role: 'EMPLOYEE',
+      department: 'Marketing & IT',
+      jobTitle: 'Growth Specialist',
+    }
+
+    // 1. Valid active session is returned
+    setActiveSession(minaSession)
+    expect(getActiveSession()?.employeeId).toBe('EMP-006')
+
+    // 2. Deactivating EMP-006 immediately invalidates the cached session
+    await employeeService.deactivate('EMP-006', 'Temporary suspension', {
+      name: hrAdminSession.name,
+      role: 'HR_ADMIN',
+    })
+    expect(getActiveSession()).toBeNull()
+
+    // Restore EMP-006
+    await employeeService.reactivate('EMP-006', 'Restored after suspension', {
+      name: hrAdminSession.name,
+      role: 'HR_ADMIN',
+    })
+
+    // 3. Terminating EMP-006 immediately invalidates the cached session
+    setActiveSession(minaSession)
+    await employeeService.terminate('EMP-006', {
+      reason: 'Contract ended',
+      actor: hrAdminSession.name,
+      actorRole: 'HR_ADMIN',
+    })
+    expect(getActiveSession()).toBeNull()
+
+    // Restore EMP-006
+    await employeeService.reactivate('EMP-006', 'Restored after termination', {
+      name: superAdminSession.name,
+      role: 'SUPER_ADMIN',
+    })
+
+    // 4. Archiving EMP-006 immediately invalidates the cached session
+    setActiveSession(minaSession)
+    await employeeService.deletePermanently('EMP-006', 'Archived for test', {
+      name: superAdminSession.name,
+      role: 'SUPER_ADMIN',
+    })
+    expect(getActiveSession()).toBeNull()
+
+    // Restore EMP-006
+    await employeeService.reactivate('EMP-006', 'Restored after archive', {
+      name: superAdminSession.name,
+      role: 'SUPER_ADMIN',
+    })
+
+    // 5. Disabling user record directly immediately invalidates the cached session
+    setActiveSession(minaSession)
+    await settingsService.updateUser('USR-006', {
+      role: 'EMPLOYEE',
+      status: 'DISABLED',
+      reason: 'Disabled user login',
+      actor: superAdminSession.name,
+      actorRole: 'SUPER_ADMIN',
+    })
+    expect(getActiveSession()).toBeNull()
+
+    // Re-enable USR-006
+    await settingsService.updateUser('USR-006', {
+      role: 'EMPLOYEE',
+      status: 'ACTIVE',
+      reason: 'Re-enabled user login',
+      actor: superAdminSession.name,
+      actorRole: 'SUPER_ADMIN',
+    })
+
+    // 6. Cached session with an outdated role is refreshed to the stored user role
+    setActiveSession({
+      ...minaSession,
+      role: 'SUPER_ADMIN', // Forged/stale cached role while stored USR-006 role is EMPLOYEE
+    })
+    const validated = getActiveSession()
+    expect(validated).not.toBeNull()
+    expect(validated?.role).toBe('EMPLOYEE')
+
+    setActiveSession(null)
+  })
+
+  it('cleans up active session on AuthProvider unmount and preserves login, logout, and demo role switching', async () => {
+    const { createElement, useState } = await import('react')
+    const { render, act } = await import('@testing-library/react')
+    const { AuthProvider, useAuth } = await import('@/app/auth-context')
+    const { DEMO_SESSIONS, getActiveSession, setActiveSession } = await import('./demo/store')
+
+    let capturedAuth: ReturnType<typeof useAuth> | null = null
+    function Probe() {
+      capturedAuth = useAuth()
+      return null
+    }
+    function Harness() {
+      const [session, setSession] = useState<SessionUser | null>(superAdminSession)
+      return createElement(AuthProvider, {
+        session,
+        setSession,
+        demoSessions: DEMO_SESSIONS,
+        children: createElement(Probe),
+      })
+    }
+
+    const { unmount } = render(createElement(Harness))
+    expect(capturedAuth).not.toBeNull()
+    expect(getActiveSession()?.role).toBe('SUPER_ADMIN')
+
+    // Switch demo role to HR_ADMIN
+    act(() => {
+      capturedAuth!.switchRoleDemo('HR_ADMIN')
+    })
+    expect(capturedAuth!.session?.role).toBe('HR_ADMIN')
+    expect(getActiveSession()?.role).toBe('HR_ADMIN')
+
+    // Sign out clears session
+    act(() => {
+      capturedAuth!.signOut()
+    })
+    expect(capturedAuth!.session).toBeNull()
+    expect(getActiveSession()).toBeNull()
+
+    // Sign in (setSession) as Employee
+    act(() => {
+      capturedAuth!.setSession(anjaliMemberSession)
+    })
+    expect(capturedAuth!.session?.employeeId).toBe('EMP-008')
+    expect(getActiveSession()?.employeeId).toBe('EMP-008')
+
+    // Unmounting AuthProvider cleans up the active session owned by that provider
+    unmount()
+    expect(getActiveSession()).toBeNull()
+
+    setActiveSession(null)
+  })
 })
+
+

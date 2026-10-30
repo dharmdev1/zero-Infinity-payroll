@@ -81,7 +81,7 @@ function ShellInner() {
       return
     }
     searchTimer.current = window.setTimeout(() => {
-      void settingsService.searchEverything(term).then((results) => {
+      void settingsService.searchEverything(term, session).then((results) => {
         setSearchResults(results)
         setSearchOpen(results.length > 0)
       })

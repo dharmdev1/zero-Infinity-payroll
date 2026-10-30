@@ -13,12 +13,12 @@ import { publishBackendNotice } from '@/utils/backend-ops'
 
 export function RecruitmentJobsPage() {
   useHeader('Jobs', [{ label: 'Workspace' }, { label: 'Recruitment', to: '/recruitment/jobs' }, { label: 'Jobs' }])
-  const { can } = useAuth()
+  const { can, session } = useAuth()
   const [status, setStatus] = useState('')
 
   const jobs = useQuery({
-    queryKey: ['recruitment', 'jobs', status],
-    queryFn: () => recruitmentService.jobs('', status),
+    queryKey: ['recruitment', 'jobs', status, session?.userId, session?.role],
+    queryFn: () => recruitmentService.jobs('', status, session),
   })
 
   const columns: Array<Column<JobPosting>> = [

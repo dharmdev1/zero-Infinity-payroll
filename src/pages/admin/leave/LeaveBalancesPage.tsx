@@ -14,21 +14,22 @@ export function LeaveBalancesPage() {
   useHeader('Leave balances', [{ label: 'Workspace' }, { label: 'Leave', to: '/leave' }, { label: 'Balances' }])
   const { session, can } = useAuth()
   const canViewAll = can('leave.view')
-  const [employeeId, setEmployeeId] = useState(session?.employeeId ?? 'EMP-001')
+  const [selectedEmployeeId, setEmployeeId] = useState(session?.employeeId ?? 'EMP-001')
+  const employeeId = canViewAll ? selectedEmployeeId : (session?.employeeId ?? selectedEmployeeId)
 
   const employeesQuery = useQuery({
-    queryKey: ['employees', 'options', 'leave-balances'],
+    queryKey: ['employees', 'options', 'leave-balances', session?.role],
     enabled: canViewAll,
-    queryFn: () => employeeService.list({ page: 1, pageSize: 200 }),
+    queryFn: () => employeeService.list({ page: 1, pageSize: 200 }, session),
   })
 
   const balances = useQuery({
-    queryKey: ['leave', 'balances', employeeId],
-    queryFn: () => leaveService.balances(employeeId, 2026),
+    queryKey: ['leave', 'balances', employeeId, session?.userId],
+    queryFn: () => leaveService.balances(employeeId, 2026, session),
   })
   const history = useQuery({
-    queryKey: ['leave', 'used', employeeId],
-    queryFn: () => leaveService.list({ employeeId, page: 1, pageSize: 100 }),
+    queryKey: ['leave', 'used', employeeId, session?.userId],
+    queryFn: () => leaveService.list({ employeeId, page: 1, pageSize: 100 }, session),
   })
 
   const approvedRows: LeaveRequest[] = (history.data?.items ?? []).filter((r) => r.status === 'APPROVED')
@@ -39,7 +40,7 @@ export function LeaveBalancesPage() {
 
   return (
     <div className="space-y-4">
-      <LeaveSubNav />
+      {canViewAll ? <LeaveSubNav /> : null}
       <PageHeaderBar title="Leave balances" description="Entitlements per employee for 2026. Pending requests are shown but never reduce balances.">
         {canViewAll ? <Link to="/leave/requests"><Button variant="secondary">Requests</Button></Link> : <Link to="/my/leave"><Button variant="secondary">My leave</Button></Link>}
       </PageHeaderBar>

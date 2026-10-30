@@ -1,5 +1,6 @@
-import { db } from './demo/store'
+import { db, getActiveSession } from './demo/store'
 import type { LeaveBalance, LeaveRequest, PaginatedResult, SessionUser } from '@/types/domain'
+import { hasPermission } from '@/types/rbac'
 
 export interface LeaveListParams {
   employeeId?: string
@@ -7,6 +8,10 @@ export interface LeaveListParams {
   leaveType?: string
   page?: number
   pageSize?: number
+}
+
+function resolveViewer(viewer?: SessionUser | null): SessionUser | null {
+  return viewer !== undefined ? viewer : getActiveSession()
 }
 
 function countWeekdays(startIso: string, endIso: string): number {
@@ -25,10 +30,14 @@ function countWeekdays(startIso: string, endIso: string): number {
 
 export const leaveService = {
   async list(params: LeaveListParams = {}, viewer?: SessionUser | null): Promise<PaginatedResult<LeaveRequest>> {
-    if (viewer?.role === 'EMPLOYEE' && params.employeeId && params.employeeId !== viewer.employeeId) {
+    const v = resolveViewer(viewer)
+    if (!v) {
+      throw new Error('Unauthorized: Authentication required to view leave requests.')
+    }
+    if (v.role === 'EMPLOYEE' && params.employeeId && params.employeeId !== v.employeeId) {
       throw new Error('Unauthorized: Employees can only access their own leave requests.')
     }
-    const effectiveEmployeeId = viewer?.role === 'EMPLOYEE' ? viewer.employeeId : params.employeeId
+    const effectiveEmployeeId = v.role === 'EMPLOYEE' ? v.employeeId : params.employeeId
     const page = params.page ?? 1
     const pageSize = params.pageSize ?? 15
     const filtered = db.leaveRequests.filter((r) => {
@@ -47,14 +56,22 @@ export const leaveService = {
   },
 
   async listMine(employeeId: string, viewer?: SessionUser | null): Promise<LeaveRequest[]> {
-    if (viewer?.role === 'EMPLOYEE' && viewer.employeeId !== employeeId) {
+    const v = resolveViewer(viewer)
+    if (!v) {
+      throw new Error('Unauthorized: Authentication required to view leave requests.')
+    }
+    if (v.role === 'EMPLOYEE' && v.employeeId !== employeeId) {
       throw new Error('Unauthorized: Employees can only view their own leave requests.')
     }
     return db.leaveRequests.filter((r) => r.employeeId === employeeId)
   },
 
   async balances(employeeId: string, year = 2026, viewer?: SessionUser | null): Promise<LeaveBalance[]> {
-    if (viewer?.role === 'EMPLOYEE' && viewer.employeeId !== employeeId) {
+    const v = resolveViewer(viewer)
+    if (!v) {
+      throw new Error('Unauthorized: Authentication required to access leave balances.')
+    }
+    if (v.role === 'EMPLOYEE' && v.employeeId !== employeeId) {
       throw new Error('Unauthorized: Employees can only access their own leave balances.')
     }
     const rows = db.leaveBalances.filter((b) => b.employeeId === employeeId && b.year === year)
@@ -66,14 +83,24 @@ export const leaveService = {
     ]
   },
 
-  async create(input: {
-    employeeId: string
-    employeeName: string
-    leaveType: LeaveRequest['leaveType']
-    startDate: string
-    endDate: string
-    reason: string
-  }): Promise<LeaveRequest> {
+  async create(
+    input: {
+      employeeId: string
+      employeeName: string
+      leaveType: LeaveRequest['leaveType']
+      startDate: string
+      endDate: string
+      reason: string
+    },
+    viewer?: SessionUser | null,
+  ): Promise<LeaveRequest> {
+    const v = resolveViewer(viewer)
+    if (!v) {
+      throw new Error('Unauthorized: Authentication required to submit leave requests.')
+    }
+    if (v.role === 'EMPLOYEE' && v.employeeId !== input.employeeId) {
+      throw new Error('Unauthorized: Employees can only submit leave requests for themselves.')
+    }
     const days = countWeekdays(input.startDate, input.endDate)
     const created: LeaveRequest = {
       id: `LV-2026-${String(db.leaveRequests.length + 1).padStart(2, '0')}`,
@@ -91,14 +118,18 @@ export const leaveService = {
     return created
   },
 
-  async decide(id: string, decision: 'APPROVED' | 'REJECTED', note: string): Promise<LeaveRequest> {
+  async decide(id: string, decision: 'APPROVED' | 'REJECTED', note: string, viewer?: SessionUser | null): Promise<LeaveRequest> {
+    const v = resolveViewer(viewer)
+    if (!v || !hasPermission(v, 'leave.approve')) {
+      throw new Error('Unauthorized: You do not have permission to approve or reject leave requests.')
+    }
     if (!note.trim()) {
       throw new Error('A decision note is required for the audit log.')
     }
     const req = db.leaveRequests.find((r) => r.id === id)
     if (!req) throw new Error(`Leave request ${id} not found`)
     req.status = decision
-    req.decidedBy = 'Sita Sharma'
+    req.decidedBy = v.name
     req.decidedAt = new Date().toISOString()
     req.decisionNote = note
     if (decision === 'APPROVED') {
@@ -109,7 +140,7 @@ export const leaveService = {
       id: `AUD-${Date.now()}`,
       action: decision === 'APPROVED' ? 'leave.approved' : 'leave.rejected',
       module: 'Leave',
-      actor: 'Sita Sharma',
+      actor: v.name,
       target: req.id,
       detail: `${decision} ${req.days}d ${req.leaveType} leave for ${req.employeeName} · note: ${note}`,
       at: new Date().toISOString(),
@@ -117,3 +148,4 @@ export const leaveService = {
     return req
   },
 }
+

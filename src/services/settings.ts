@@ -1,7 +1,8 @@
-import { db } from './demo/store'
-import type { AuditLogEntry, OrgUser, PaginatedResult } from '@/types/domain'
+import { db, getActiveSession } from './demo/store'
+import { canViewerAccessTask, getProjectScope } from './tasks'
+import type { AuditLogEntry, OrgUser, PaginatedResult, SessionUser } from '@/types/domain'
 import type { Role } from '@/types/rbac'
-import { ROLE_LABELS } from '@/types/rbac'
+import { hasPermission, ROLE_LABELS } from '@/types/rbac'
 
 function countActiveSuperAdmins(excludeUserId?: string): number {
   return db.users.filter(
@@ -56,8 +57,12 @@ export const settingsService = {
 
   updateCompanyProfile(
     patch: Partial<CompanyProfileSettings>,
-    options: { actor?: string; recordAudit?: boolean } = {},
+    options: { actor?: string; recordAudit?: boolean; viewer?: SessionUser | null } = {},
   ): CompanyProfileSettings {
+    const v = options.viewer !== undefined ? options.viewer : getActiveSession()
+    if (!v || !hasPermission(v, 'settings.company')) {
+      throw new Error('Unauthorized: You do not have permission to update company profile settings.')
+    }
     const prev = currentCompanyProfile
     const nextName = patch.name !== undefined ? patch.name : prev.name
     const derivedShortName =
@@ -80,7 +85,7 @@ export const settingsService = {
         id: `AUD-${100 + db.auditLogs.length + 1}`,
         action: 'company.profile.updated',
         module: 'Settings',
-        actor: options.actor ?? 'Admin',
+        actor: options.actor ?? v.name,
         target: currentCompanyProfile.name,
         previousValue: `${prev.name} (Logo: ${prev.logoImageUrl ? 'Image' : prev.logoText})`,
         newValue: `${currentCompanyProfile.name} (Logo: ${currentCompanyProfile.logoImageUrl ? 'Image' : currentCompanyProfile.logoText})`,
@@ -155,7 +160,16 @@ export const settingsService = {
     }
   },
 
-  async users(search = '', page = 1, pageSize = 10): Promise<PaginatedResult<OrgUser>> {
+  async users(
+    search = '',
+    page = 1,
+    pageSize = 10,
+    viewer?: SessionUser | null,
+  ): Promise<PaginatedResult<OrgUser>> {
+    const v = viewer !== undefined ? viewer : getActiveSession()
+    if (!v || !hasPermission(v, 'settings.users')) {
+      throw new Error('Unauthorized: You do not have permission to view workspace users.')
+    }
     const q = search.trim().toLowerCase()
     const filtered = db.users.filter((u) => (!q ? true : `${u.name} ${u.email} ${u.role} ${u.employeeId ?? ''}`.toLowerCase().includes(q)))
     const start = (page - 1) * pageSize
@@ -175,7 +189,8 @@ export const settingsService = {
     actor?: string
     actorRole?: Role
   }): Promise<OrgUser> {
-    if (input.actorRole && input.actorRole !== 'SUPER_ADMIN') {
+    const actorRole = input.actorRole ?? getActiveSession()?.role
+    if (actorRole !== 'SUPER_ADMIN') {
       throw new Error('Only Super Admin can assign, change, or remove system-level roles.')
     }
 
@@ -221,7 +236,7 @@ export const settingsService = {
       id: `AUD-${100 + db.auditLogs.length + 1}`,
       action: 'user.role.assigned',
       module: 'Settings',
-      actor: input.actor ?? 'Super Admin',
+      actor: input.actor ?? getActiveSession()?.name ?? 'Super Admin',
       target: `${emp.name} (${emp.id})`,
       previousValue: ROLE_LABELS[previousRole],
       newValue: ROLE_LABELS[input.role],
@@ -244,11 +259,16 @@ export const settingsService = {
       actorRole?: Role
     },
   ): Promise<OrgUser> {
+    const actorRole = patch.actorRole ?? getActiveSession()?.role
+    if (!actorRole || actorRole === 'EMPLOYEE') {
+      throw new Error('Unauthorized: Only HR Admin or Super Admin can update user access.')
+    }
+
     const idx = db.users.findIndex((u) => u.id === userId)
     if (idx === -1) throw new Error(`User ${userId} not found`)
     const prev = db.users[idx]
 
-    if (patch.actorRole && patch.actorRole !== 'SUPER_ADMIN') {
+    if (actorRole !== 'SUPER_ADMIN') {
       if (patch.role !== prev.role) {
         throw new Error('Only Super Admin can change system-level roles.')
       }
@@ -282,7 +302,7 @@ export const settingsService = {
       id: `AUD-${100 + db.auditLogs.length + 1}`,
       action: 'user.access.updated',
       module: 'Settings',
-      actor: patch.actor ?? 'Admin',
+      actor: patch.actor ?? getActiveSession()?.name ?? 'Admin',
       target: `${updated.name} (${updated.id})`,
       previousValue: `${ROLE_LABELS[prev.role]} · ${prev.status}`,
       newValue: `${ROLE_LABELS[updated.role]} · ${updated.status}`,
@@ -302,13 +322,17 @@ export const settingsService = {
     actor?: string
     actorRole?: Role
   }): Promise<OrgUser> {
-    if (input.actorRole && input.actorRole !== 'SUPER_ADMIN' && input.role !== 'EMPLOYEE') {
+    const actorRole = input.actorRole ?? getActiveSession()?.role
+    if (!actorRole || actorRole === 'EMPLOYEE') {
+      throw new Error('Unauthorized: Only HR Admin or Super Admin can invite users.')
+    }
+    if (actorRole !== 'SUPER_ADMIN' && input.role !== 'EMPLOYEE') {
       throw new Error('Only Super Admin can invite users with HR Admin or Super Admin system roles.')
     }
 
     const existing = input.employeeId ? db.users.find((u) => u.employeeId === input.employeeId) : undefined
     if (existing) {
-      if (input.actorRole && input.actorRole !== 'SUPER_ADMIN' && existing.role !== input.role) {
+      if (actorRole !== 'SUPER_ADMIN' && existing.role !== input.role) {
         throw new Error('Only Super Admin can change system-level roles.')
       }
       existing.role = input.role
@@ -330,7 +354,7 @@ export const settingsService = {
       id: `AUD-${100 + db.auditLogs.length + 1}`,
       action: 'user.invited',
       module: 'Settings',
-      actor: input.actor ?? 'Admin',
+      actor: input.actor ?? getActiveSession()?.name ?? 'Admin',
       target: `${created.name} (${created.email})`,
       newValue: ROLE_LABELS[created.role],
       detail: `Invited workspace user with role ${ROLE_LABELS[created.role]}${created.employeeId ? ` linked to ${created.employeeId}` : ''}.`,
@@ -340,7 +364,14 @@ export const settingsService = {
     return created
   },
 
-  async audit(params: { search?: string; module?: string; page?: number; pageSize?: number } = {}): Promise<PaginatedResult<AuditLogEntry>> {
+  async audit(
+    params: { search?: string; module?: string; page?: number; pageSize?: number } = {},
+    viewer?: SessionUser | null,
+  ): Promise<PaginatedResult<AuditLogEntry>> {
+    const v = viewer !== undefined ? viewer : getActiveSession()
+    if (!v || !hasPermission(v, 'settings.audit')) {
+      throw new Error('Unauthorized: You do not have permission to view audit logs.')
+    }
     const page = params.page ?? 1
     const pageSize = params.pageSize ?? 15
     const q = (params.search ?? '').trim().toLowerCase()
@@ -358,26 +389,43 @@ export const settingsService = {
     }
   },
 
-  async searchEverything(term: string): Promise<Array<{ label: string; to: string }>> {
+  async searchEverything(term: string, viewer?: SessionUser | null): Promise<Array<{ label: string; to: string }>> {
+    const v = viewer !== undefined ? viewer : getActiveSession()
     const q = term.trim().toLowerCase()
-    if (!q) return []
+    if (!q || !v) return []
+    const canViewAdminTasks = hasPermission(v, 'tasks.view')
+    const canViewAdminProjects = hasPermission(v, 'projects.view')
     const results: Array<{ label: string; to: string }> = []
+
     for (const e of db.employees) {
       if (e.status === 'ARCHIVED') continue
+      if (v.role === 'EMPLOYEE' && e.status === 'TERMINATED') continue
       if (`${e.name} ${e.id} ${e.department}`.toLowerCase().includes(q)) {
-        results.push({ label: `Employee · ${e.name} (${e.id})`, to: `/employees/${e.id}` })
+        results.push({
+          label: `Employee · ${e.name} (${e.id})`,
+          to: `/employees/${e.id}`,
+        })
       }
     }
     for (const t of db.tasks) {
+      if (!canViewerAccessTask(t, v)) continue
       if (t.title.toLowerCase().includes(q)) {
-        results.push({ label: `Task · ${t.title}`, to: `/tasks/${t.id}` })
+        results.push({
+          label: `Task · ${t.title}`,
+          to: canViewAdminTasks ? `/tasks/${t.id}` : '/my/tasks',
+        })
       }
     }
     for (const p of db.projects) {
+      if (!getProjectScope(p, v).canView) continue
       if (`${p.name} ${p.code}`.toLowerCase().includes(q)) {
-        results.push({ label: `Project · ${p.name}`, to: `/projects/${p.id}` })
+        results.push({
+          label: `Project · ${p.name}`,
+          to: canViewAdminProjects ? `/projects/${p.id}` : '/my/tasks',
+        })
       }
     }
     return results.slice(0, 6)
   },
 }
+

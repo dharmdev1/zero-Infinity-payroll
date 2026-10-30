@@ -3,17 +3,19 @@ import { Badge, Button, Card } from '@/components/ui/base'
 import { useAuth } from '@/app/auth-context'
 import { useHeader, PageHeaderBar } from '@/components/layout/page-header'
 import { ReportsExportNote } from '@/modules/reports/reports-shared'
+import type { Permission } from '@/types/rbac'
 
-const REPORTS = [
-  { title: 'Employees', to: '/reports/employees', description: 'Headcount, departments, employment types and tenure.' },
-  { title: 'Attendance', to: '/reports/attendance', description: 'Present / late / absent / leave by department and period.' },
-  { title: 'Leave', to: '/reports/leave', description: 'Requests by status and type for the Mon–Fri workweek.' },
-  { title: 'Payroll', to: '/reports/payroll', description: 'Run totals in NPR (paisa-int safe) by period.' },
+const REPORTS: Array<{ title: string; to: string; description: string; permission: Permission }> = [
+  { title: 'Employees', to: '/reports/employees', description: 'Headcount, departments, employment types and tenure.', permission: 'reports.view' },
+  { title: 'Attendance', to: '/reports/attendance', description: 'Present / late / absent / leave by department and period.', permission: 'reports.view' },
+  { title: 'Leave', to: '/reports/leave', description: 'Requests by status and type for the Mon–Fri workweek.', permission: 'reports.view' },
+  { title: 'Payroll', to: '/reports/payroll', description: 'Run totals in NPR (paisa-int safe) by period.', permission: 'payroll.view' },
 ]
 
 export function ReportsHome() {
   useHeader('Reports', [{ label: 'Workspace' }, { label: 'Reports' }])
   const { can } = useAuth()
+  const visibleReports = REPORTS.filter((r) => can(r.permission))
 
   return (
     <div className="space-y-5">
@@ -23,7 +25,7 @@ export function ReportsHome() {
       <ReportsExportNote />
 
       <div className="grid gap-4 sm:grid-cols-2">
-        {REPORTS.map((c) => (
+        {visibleReports.map((c) => (
           <Card key={c.to} className="flex flex-col items-start gap-3 p-6">
             <div>
               <h3 className="text-[15px] font-semibold text-ink">{c.title}</h3>
@@ -36,3 +38,4 @@ export function ReportsHome() {
     </div>
   )
 }
+

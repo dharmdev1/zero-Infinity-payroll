@@ -4,12 +4,17 @@ import { Button, Card, EmptyState, InfoNote, SectionTitle, Skeleton } from '@/co
 import { StatCard } from '@/components/data-display/stat-card'
 import { StatusBadge, payrollRunTone } from '@/components/data-display/status'
 import { payrollService } from '@/services/payroll'
+import { useAuth } from '@/app/auth-context'
 import { useHeader, PageHeaderBar } from '@/components/layout/page-header'
 import { formatNpr } from '@/utils/npr'
 
 export function PayrollHomePage() {
   useHeader('Payroll', [{ label: 'Workspace' }, { label: 'Payroll' }])
-  const runs = useQuery({ queryKey: ['payroll', 'home-runs'], queryFn: () => payrollService.runs('', 1, 10) })
+  const { session } = useAuth()
+  const runs = useQuery({
+    queryKey: ['payroll', 'home-runs', session?.userId, session?.role],
+    queryFn: () => payrollService.runs('', 1, 10, session),
+  })
   const latest = runs.data?.items[0]
 
   return (

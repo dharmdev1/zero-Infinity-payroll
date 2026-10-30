@@ -10,6 +10,7 @@ import { useHeader, PageHeaderBar } from '@/components/layout/page-header'
 import type { AuditLogEntry } from '@/types/domain'
 import { formatNptDateTime } from '@/utils/npt'
 import { SettingsSubNav } from '@/modules/settings/SettingsSubNav'
+import { useAuth } from '@/app/auth-context'
 
 const MODULE_OPTIONS = [
   { value: '', label: 'All modules' },
@@ -28,21 +29,25 @@ export function AuditLogsPage() {
     { label: 'Settings', to: '/settings/company' },
     { label: 'Audit logs' },
   ])
+  const { session } = useAuth()
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [module, setModule] = useState('')
   const [page, setPage] = useState(1)
 
   const logs = useQuery({
-    queryKey: ['settings', 'audit', { search, module, page }],
+    queryKey: ['settings', 'audit', { search, module, page }, session?.userId, session?.role],
     placeholderData: keepPreviousData,
     queryFn: () =>
-      settingsService.audit({
-        ...(search ? { search } : {}),
-        ...(module ? { module } : {}),
-        page,
-        pageSize: 15,
-      }),
+      settingsService.audit(
+        {
+          ...(search ? { search } : {}),
+          ...(module ? { module } : {}),
+          page,
+          pageSize: 15,
+        },
+        session,
+      ),
   })
 
   const columns: Array<Column<AuditLogEntry>> = [

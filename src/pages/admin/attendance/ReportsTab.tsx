@@ -4,6 +4,7 @@ import { Button, Card, InfoNote, SectionTitle, Skeleton } from '@/components/ui/
 import { StatCard } from '@/components/data-display/stat-card'
 import { reportService } from '@/services/documents'
 import { db, DEMO_TODAY } from '@/services/demo/store'
+import { useAuth } from '@/app/auth-context'
 
 import { publishBackendNotice } from '@/utils/backend-ops'
 
@@ -12,14 +13,15 @@ function monthStart(): string {
 }
 
 export function AttendanceReportsTab() {
+  const { session } = useAuth()
   const [fromDate, setFromDate] = useState(monthStart())
   const [toDate, setToDate] = useState(db.today)
   const [applied, setApplied] = useState({ fromDate: monthStart(), toDate: db.today })
 
   const report = useQuery({
-    queryKey: ['reports', 'attendance', applied.fromDate, applied.toDate],
+    queryKey: ['reports', 'attendance', applied.fromDate, applied.toDate, session?.userId, session?.role],
     enabled: applied.fromDate <= applied.toDate,
-    queryFn: () => reportService.attendanceByDepartment(applied.fromDate, applied.toDate),
+    queryFn: () => reportService.attendanceByDepartment(applied.fromDate, applied.toDate, session),
   })
 
   const totals = report.data?.totals

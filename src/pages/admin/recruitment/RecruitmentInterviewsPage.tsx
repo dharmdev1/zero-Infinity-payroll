@@ -4,12 +4,17 @@ import { Badge, Button, Card, EmptyState, SectionTitle, Skeleton } from '@/compo
 import { StatCard } from '@/components/data-display/stat-card'
 import { recruitmentService } from '@/services/recruitment'
 import { useHeader, PageHeaderBar } from '@/components/layout/page-header'
+import { useAuth } from '@/app/auth-context'
 import { formatNptDateTime } from '@/utils/npt'
 
 export function RecruitmentInterviewsPage() {
   useHeader('Interviews', [{ label: 'Workspace' }, { label: 'Recruitment', to: '/recruitment/jobs' }, { label: 'Interviews' }])
+  const { session } = useAuth()
 
-  const interviews = useQuery({ queryKey: ['interviews'], queryFn: () => recruitmentService.interviews() })
+  const interviews = useQuery({
+    queryKey: ['interviews', session?.userId, session?.role],
+    queryFn: () => recruitmentService.interviews(session),
+  })
   const data = interviews.data ?? []
   const upcoming = data.filter((i) => i.status === 'SCHEDULED')
   const completed = data.filter((i) => i.status === 'COMPLETED')

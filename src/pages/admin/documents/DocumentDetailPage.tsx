@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom'
 import { Badge, Button, Card, EmptyState, InfoNote, SectionTitle, Skeleton } from '@/components/ui/base'
 import { DefinitionList } from '@/components/data-display/fields'
 import { documentService } from '@/services/documents'
+import { useAuth } from '@/app/auth-context'
 import { useHeader, PageHeaderBar } from '@/components/layout/page-header'
 import type { CompanyDocument } from '@/types/domain'
 import { formatNptDate } from '@/utils/npt'
@@ -11,11 +12,12 @@ import { formatDocSize, docCategoryTone } from '@/modules/documents/doc-format'
 
 export function DocumentDetailPage() {
   const { documentId } = useParams()
+  const { session } = useAuth()
   useHeader('Document', [{ label: 'Workspace' }, { label: 'Documents', to: '/documents' }, { label: documentId ?? '' }])
 
   const doc = useQuery({
-    queryKey: ['documents', 'detail', documentId],
-    queryFn: () => documentService.get(documentId ?? ''),
+    queryKey: ['documents', 'detail', documentId, session?.role],
+    queryFn: () => documentService.get(documentId ?? '', session),
     enabled: !!documentId,
   })
 

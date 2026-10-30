@@ -15,15 +15,15 @@ import { formatDocSize, docCategoryTone } from '@/modules/documents/doc-format'
 
 export function DocumentsPage() {
   useHeader('Company documents', [{ label: 'Workspace' }, { label: 'Documents' }])
-  const { can } = useAuth()
+  const { session, can } = useAuth()
   const [category, setCategory] = useState('')
   const [page, setPage] = useState(1)
 
   const categoriesQuery = useQuery({ queryKey: ['documents', 'categories'], queryFn: () => documentService.categories(), staleTime: Infinity })
   const docs = useQuery({
-    queryKey: ['documents', { category, page }],
+    queryKey: ['documents', { category, page, role: session?.role }],
     placeholderData: keepPreviousData,
-    queryFn: () => documentService.list({ ...(category ? { category } : {}), page, pageSize: 12 }),
+    queryFn: () => documentService.list({ ...(category ? { category } : {}), page, pageSize: 12 }, session),
   })
 
   const columns: Array<Column<CompanyDocument>> = [

@@ -13,18 +13,22 @@ export function PayrollRunDetailPage() {
   const { runId } = useParams()
   useHeader('Payroll run', [{ label: 'Workspace' }, { label: 'Payroll', to: '/payroll' }, { label: 'Runs', to: '/payroll/runs' }, { label: runId ?? '' }])
 
-  const { can } = useAuth()
+  const { session, can } = useAuth()
   const queryClient = useQueryClient()
-  const run = useQuery({ queryKey: ['payroll', 'run', runId], queryFn: () => payrollService.run(runId ?? ''), enabled: !!runId })
+  const run = useQuery({
+    queryKey: ['payroll', 'run', runId, session?.role],
+    queryFn: () => payrollService.run(runId ?? '', session),
+    enabled: !!runId,
+  })
   const payslips = useQuery({
-    queryKey: ['payroll', 'run-payslips', runId],
-    queryFn: () => payrollService.runPayslips(runId ?? '', { page: 1, pageSize: 50 }),
+    queryKey: ['payroll', 'run-payslips', runId, session?.role],
+    queryFn: () => payrollService.runPayslips(runId ?? '', { page: 1, pageSize: 50 }, session),
     enabled: !!runId,
   })
 
   const transition = useMutation({
     mutationFn: ({ action, note }: { action: 'submit-review' | 'approve' | 'pay'; note: string }) =>
-      payrollService.transition(runId ?? '', action, note),
+      payrollService.transition(runId ?? '', action, note, session),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['payroll'] }),
   })
 

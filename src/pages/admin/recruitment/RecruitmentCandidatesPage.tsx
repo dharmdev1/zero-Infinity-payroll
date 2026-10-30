@@ -14,19 +14,19 @@ import { CANDIDATE_STAGES, STAGE_TONES, nextStageOf } from '@/modules/recruitmen
 
 export function RecruitmentCandidatesPage() {
   useHeader('Candidates', [{ label: 'Workspace' }, { label: 'Recruitment', to: '/recruitment/jobs' }, { label: 'Candidates' }])
-  const { can } = useAuth()
+  const { can, session } = useAuth()
   const queryClient = useQueryClient()
   const [stage, setStage] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
 
   const candidates = useQuery({
-    queryKey: ['candidates', search, stage],
-    queryFn: () => recruitmentService.candidates(search, stage),
+    queryKey: ['candidates', search, stage, session?.userId, session?.role],
+    queryFn: () => recruitmentService.candidates(search, stage, session),
   })
 
   const move = useMutation({
-    mutationFn: ({ id, next }: { id: string; next: Candidate['stage'] }) => recruitmentService.moveCandidateStage(id, next),
+    mutationFn: ({ id, next }: { id: string; next: Candidate['stage'] }) => recruitmentService.moveCandidateStage(id, next, session),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['candidates'] }),
   })
 

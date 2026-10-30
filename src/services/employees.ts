@@ -1,4 +1,4 @@
-import { db } from './demo/store'
+import { db, getActiveSession } from './demo/store'
 import type { Employee, EmployeeDocument, EmploymentStatus, PaginatedResult, SessionUser } from '@/types/domain'
 import type { Role } from '@/types/rbac'
 
@@ -9,6 +9,14 @@ export interface EmployeeListParams {
   includeArchived?: boolean
   page?: number
   pageSize?: number
+}
+
+function resolveViewer(viewer?: SessionUser | null): SessionUser | null {
+  return viewer !== undefined ? viewer : getActiveSession()
+}
+
+function resolveActorRole(role?: Role): Role | undefined {
+  return role !== undefined ? role : getActiveSession()?.role
 }
 
 function getTargetSystemRole(employeeId: string): Role {
@@ -29,9 +37,10 @@ function countActiveSuperAdmins(): number {
 }
 
 export function redactEmployeeForViewer(employee: Employee, viewer?: SessionUser | null): Employee {
-  if (!viewer) return employee
-  if (viewer.role === 'SUPER_ADMIN' || viewer.role === 'HR_ADMIN') return employee
-  if (viewer.employeeId === employee.id) return employee
+  const v = resolveViewer(viewer)
+  if (v && (v.role === 'SUPER_ADMIN' || v.role === 'HR_ADMIN' || v.employeeId === employee.id)) {
+    return employee
+  }
   return {
     ...employee,
     personalEmail: 'Protected (HR only)',
@@ -46,12 +55,13 @@ export function redactEmployeeForViewer(employee: Employee, viewer?: SessionUser
 
 export const employeeService = {
   async list(params: EmployeeListParams = {}, viewer?: SessionUser | null): Promise<PaginatedResult<Employee>> {
+    const v = resolveViewer(viewer)
     const page = params.page ?? 1
     const pageSize = params.pageSize ?? 10
     const q = (params.search ?? '').trim().toLowerCase()
     const filtered = db.employees.filter((e) => {
       if (!params.includeArchived && !params.status && e.status === 'ARCHIVED') return false
-      if (viewer?.role === 'EMPLOYEE' && (e.status === 'ARCHIVED' || e.status === 'TERMINATED')) return false
+      if ((!v || v.role === 'EMPLOYEE') && (e.status === 'ARCHIVED' || e.status === 'TERMINATED')) return false
       if (params.department && e.department !== params.department) return false
       if (params.status && e.status !== params.status) return false
       if (q && !`${e.name} ${e.id} ${e.workEmail} ${e.department} ${e.jobTitle}`.toLowerCase().includes(q)) return false
@@ -59,7 +69,7 @@ export const employeeService = {
     })
     const start = (page - 1) * pageSize
     return {
-      items: filtered.slice(start, start + pageSize).map((e) => redactEmployeeForViewer(e, viewer)),
+      items: filtered.slice(start, start + pageSize).map((e) => redactEmployeeForViewer(e, v)),
       total: filtered.length,
       page,
       pageSize,
@@ -67,17 +77,18 @@ export const employeeService = {
   },
 
   async get(employeeId: string, viewer?: SessionUser | null): Promise<Employee> {
+    const v = resolveViewer(viewer)
     const found = db.employees.find((e) => e.id === employeeId)
     if (!found) throw new Error(`Employee ${employeeId} not found`)
-    return redactEmployeeForViewer(found, viewer)
+    return redactEmployeeForViewer(found, v)
   },
 
   async create(
     input: Omit<Employee, 'id' | 'status'> & { systemRole?: Role; actor?: string; actorRole?: Role },
   ): Promise<Employee> {
-    const actorRole = input.actorRole ?? 'SUPER_ADMIN'
-    if (actorRole === 'EMPLOYEE') {
-      throw new Error('Unauthorized: Employees cannot create employee records.')
+    const actorRole = resolveActorRole(input.actorRole)
+    if (!actorRole || actorRole === 'EMPLOYEE') {
+      throw new Error('Unauthorized: Only HR Admin or Super Admin can create employee records.')
     }
     const requestedRole = input.systemRole ?? 'EMPLOYEE'
     if (actorRole !== 'SUPER_ADMIN' && requestedRole !== 'EMPLOYEE') {
@@ -109,7 +120,7 @@ export const employeeService = {
       id: `AUD-${100 + db.auditLogs.length + 1}`,
       action: 'employee.created',
       module: 'Employees',
-      actor: actor ?? 'Admin',
+      actor: actor ?? getActiveSession()?.name ?? 'Admin',
       target: `${created.name} (${created.id})`,
       newValue: `${created.status} · ${requestedRole}`,
       detail: `Created employee record for ${created.name} (${created.department}) with system role ${requestedRole}.`,
@@ -119,8 +130,16 @@ export const employeeService = {
   },
 
   async update(employeeId: string, patch: Partial<Employee>, actor?: SessionUser | null): Promise<Employee> {
-    if (actor && actor.role === 'EMPLOYEE' && actor.employeeId !== employeeId) {
+    const v = resolveViewer(actor)
+    if (!v) {
+      throw new Error('Unauthorized: Authentication required to update employee profiles.')
+    }
+    if (v.role === 'EMPLOYEE' && v.employeeId !== employeeId) {
       throw new Error('Unauthorized: Employees cannot modify other employee profiles.')
+    }
+    const targetRole = getTargetSystemRole(employeeId)
+    if (v.role === 'HR_ADMIN' && v.employeeId !== employeeId && (targetRole === 'HR_ADMIN' || targetRole === 'SUPER_ADMIN')) {
+      throw new Error('Unauthorized: HR Admin cannot modify HR Admin or Super Admin profiles.')
     }
     const idx = db.employees.findIndex((e) => e.id === employeeId)
     if (idx === -1) throw new Error(`Employee ${employeeId} not found`)
@@ -134,20 +153,35 @@ export const employeeService = {
     reason: string,
     actor?: { name?: string; role?: Role },
   ): Promise<Employee> {
-    const prev = await this.get(employeeId)
-    const emp = await this.update(employeeId, {
+    const actorRole = resolveActorRole(actor?.role)
+    if (!actorRole || actorRole === 'EMPLOYEE') {
+      throw new Error('Unauthorized: Only HR Admin or Super Admin can change employee status.')
+    }
+    const targetRole = getTargetSystemRole(employeeId)
+    if (actorRole === 'HR_ADMIN' && (targetRole === 'HR_ADMIN' || targetRole === 'SUPER_ADMIN')) {
+      throw new Error('Unauthorized: HR Admin cannot modify the status of HR Admin or Super Admin accounts.')
+    }
+    const idx = db.employees.findIndex((e) => e.id === employeeId)
+    if (idx === -1) throw new Error(`Employee ${employeeId} not found`)
+    const prev = db.employees[idx]
+    if (prev.status === 'TERMINATED' || prev.status === 'INACTIVE' || prev.status === 'ARCHIVED') {
+      throw new Error(
+        'Cannot change status of a terminated, deactivated, or archived employee directly. Use Reactivate Account first.',
+      )
+    }
+
+    const emp: Employee = {
+      ...prev,
       status,
       deactivationReason: undefined,
-    })
-    const user = db.users.find((u) => u.employeeId === employeeId)
-    if (user && user.status === 'DISABLED') {
-      user.status = 'ACTIVE'
     }
+    db.employees[idx] = emp
+
     db.auditLogs.unshift({
       id: `AUD-${100 + db.auditLogs.length + 1}`,
       action: 'employee.status.changed',
       module: 'Employees',
-      actor: actor?.name ?? 'Admin',
+      actor: actor?.name ?? getActiveSession()?.name ?? 'Admin',
       target: `${emp.name} (${employeeId})`,
       previousValue: prev.status,
       newValue: status,
@@ -167,9 +201,9 @@ export const employeeService = {
       actorRole?: Role
     },
   ): Promise<Employee> {
-    const actorRole = options.actorRole ?? 'SUPER_ADMIN'
-    if (actorRole === 'EMPLOYEE') {
-      throw new Error('Unauthorized: Employees cannot terminate accounts.')
+    const actorRole = resolveActorRole(options.actorRole)
+    if (!actorRole || actorRole === 'EMPLOYEE') {
+      throw new Error('Unauthorized: Only HR Admin or Super Admin can terminate accounts.')
     }
     if (!options.reason.trim()) {
       throw new Error('A termination reason is required.')
@@ -182,13 +216,17 @@ export const employeeService = {
       throw new Error('Cannot terminate the last active Super Admin account.')
     }
 
-    const prev = await this.get(employeeId)
+    const idx = db.employees.findIndex((e) => e.id === employeeId)
+    if (idx === -1) throw new Error(`Employee ${employeeId} not found`)
+    const prev = db.employees[idx]
     const terminatedAt = options.terminationDate || db.today
-    const emp = await this.update(employeeId, {
+    const emp: Employee = {
+      ...prev,
       status: 'TERMINATED',
       terminatedAt,
       terminationReason: options.reason.trim(),
-    })
+    }
+    db.employees[idx] = emp
 
     const user = db.users.find((u) => u.employeeId === employeeId)
     if (user) {
@@ -199,7 +237,7 @@ export const employeeService = {
       id: `AUD-${100 + db.auditLogs.length + 1}`,
       action: 'employee.terminated',
       module: 'Employees',
-      actor: options.actor ?? 'Admin',
+      actor: options.actor ?? getActiveSession()?.name ?? 'Admin',
       target: `${emp.name} (${employeeId})`,
       previousValue: prev.status,
       newValue: 'TERMINATED',
@@ -215,9 +253,9 @@ export const employeeService = {
     reason: string,
     actor?: { name?: string; role?: Role },
   ): Promise<Employee> {
-    const actorRole = actor?.role ?? 'SUPER_ADMIN'
-    if (actorRole === 'EMPLOYEE') {
-      throw new Error('Unauthorized: Employees cannot deactivate accounts.')
+    const actorRole = resolveActorRole(actor?.role)
+    if (!actorRole || actorRole === 'EMPLOYEE') {
+      throw new Error('Unauthorized: Only HR Admin or Super Admin can deactivate accounts.')
     }
     if (!reason.trim()) {
       throw new Error('A deactivation reason is required.')
@@ -230,11 +268,15 @@ export const employeeService = {
       throw new Error('Cannot deactivate the last active Super Admin account.')
     }
 
-    const prev = await this.get(employeeId)
-    const emp = await this.update(employeeId, {
+    const idx = db.employees.findIndex((e) => e.id === employeeId)
+    if (idx === -1) throw new Error(`Employee ${employeeId} not found`)
+    const prev = db.employees[idx]
+    const emp: Employee = {
+      ...prev,
       status: 'INACTIVE',
       deactivationReason: reason.trim(),
-    })
+    }
+    db.employees[idx] = emp
 
     const user = db.users.find((u) => u.employeeId === employeeId)
     if (user) {
@@ -245,7 +287,7 @@ export const employeeService = {
       id: `AUD-${100 + db.auditLogs.length + 1}`,
       action: 'employee.deactivated',
       module: 'Employees',
-      actor: actor?.name ?? 'Admin',
+      actor: actor?.name ?? getActiveSession()?.name ?? 'Admin',
       target: `${emp.name} (${employeeId})`,
       previousValue: prev.status,
       newValue: 'INACTIVE',
@@ -261,20 +303,32 @@ export const employeeService = {
     reason: string,
     actor?: { name?: string; role?: Role },
   ): Promise<Employee> {
-    const actorRole = actor?.role ?? 'SUPER_ADMIN'
-    if (actorRole === 'EMPLOYEE') {
-      throw new Error('Unauthorized: Employees cannot reactivate accounts.')
+    const actorRole = resolveActorRole(actor?.role)
+    if (!actorRole || actorRole === 'EMPLOYEE') {
+      throw new Error('Unauthorized: Only HR Admin or Super Admin can reactivate accounts.')
     }
     const targetRole = getTargetSystemRole(employeeId)
     if (actorRole === 'HR_ADMIN' && (targetRole === 'HR_ADMIN' || targetRole === 'SUPER_ADMIN')) {
       throw new Error('Unauthorized: HR Admin cannot reactivate an HR Admin or Super Admin account.')
     }
 
-    const prev = await this.get(employeeId)
-    const emp = await this.update(employeeId, {
+    const idx = db.employees.findIndex((e) => e.id === employeeId)
+    if (idx === -1) throw new Error(`Employee ${employeeId} not found`)
+    const prev = db.employees[idx]
+    if (prev.status === 'ARCHIVED' && actorRole !== 'SUPER_ADMIN') {
+      throw new Error('Unauthorized: Only a Super Admin can reactivate an archived employee account.')
+    }
+
+    const emp: Employee = {
+      ...prev,
       status: 'ACTIVE',
       deactivationReason: undefined,
-    })
+      terminatedAt: undefined,
+      terminationReason: undefined,
+      archivedAt: undefined,
+      archiveReason: undefined,
+    }
+    db.employees[idx] = emp
 
     const user = db.users.find((u) => u.employeeId === employeeId)
     if (user) {
@@ -285,7 +339,7 @@ export const employeeService = {
       id: `AUD-${100 + db.auditLogs.length + 1}`,
       action: 'employee.reactivated',
       module: 'Employees',
-      actor: actor?.name ?? 'Admin',
+      actor: actor?.name ?? getActiveSession()?.name ?? 'Admin',
       target: `${emp.name} (${employeeId})`,
       previousValue: prev.status,
       newValue: 'ACTIVE',
@@ -301,7 +355,7 @@ export const employeeService = {
     reason: string,
     actor?: { name?: string; role?: Role },
   ): Promise<Employee> {
-    const actorRole = actor?.role ?? 'SUPER_ADMIN'
+    const actorRole = resolveActorRole(actor?.role)
     if (actorRole !== 'SUPER_ADMIN') {
       throw new Error('Unauthorized: Only a Super Admin can remove/archive an employee account.')
     }
@@ -313,12 +367,16 @@ export const employeeService = {
       throw new Error('Cannot archive or remove the last active Super Admin account.')
     }
 
-    const prev = await this.get(employeeId)
-    const emp = await this.update(employeeId, {
+    const idx = db.employees.findIndex((e) => e.id === employeeId)
+    if (idx === -1) throw new Error(`Employee ${employeeId} not found`)
+    const prev = db.employees[idx]
+    const emp: Employee = {
+      ...prev,
       status: 'ARCHIVED',
       archivedAt: db.today,
       archiveReason: reason.trim(),
-    })
+    }
+    db.employees[idx] = emp
 
     const user = db.users.find((u) => u.employeeId === employeeId)
     if (user) {
@@ -329,7 +387,7 @@ export const employeeService = {
       id: `AUD-${100 + db.auditLogs.length + 1}`,
       action: 'employee.archived',
       module: 'Employees',
-      actor: actor?.name ?? 'Super Admin',
+      actor: actor?.name ?? getActiveSession()?.name ?? 'Super Admin',
       target: `${emp.name} (${employeeId})`,
       previousValue: prev.status,
       newValue: 'ARCHIVED',
@@ -341,9 +399,14 @@ export const employeeService = {
   },
 
   async documents(employeeId: string, viewer?: SessionUser | null): Promise<EmployeeDocument[]> {
-    if (viewer && viewer.role === 'EMPLOYEE' && viewer.employeeId !== employeeId) {
+    const v = resolveViewer(viewer)
+    if (!v) {
+      throw new Error('Unauthorized: Authentication required to access employee documents.')
+    }
+    if (v.role === 'EMPLOYEE' && v.employeeId !== employeeId) {
       throw new Error('Unauthorized: Employees can only access their own personal documents.')
     }
     return db.employeeDocuments.filter((d) => d.employeeId === employeeId)
   },
 }
+

@@ -128,7 +128,7 @@ export const router = createBrowserRouter([
               { path: 'reports/employees', element: guarded(<EmployeeReportsPage />, 'reports.view') },
               { path: 'reports/attendance', element: guarded(<AttendanceReportsPage />, 'reports.view') },
               { path: 'reports/leave', element: guarded(<LeaveReportsPage />, 'reports.view') },
-              { path: 'reports/payroll', element: guarded(<PayrollReportsPage />, 'reports.view') },
+              { path: 'reports/payroll', element: guarded(<PayrollReportsPage />, 'payroll.view') },
               { path: 'settings', element: <Navigate to="/settings/users" replace /> },
               { path: 'settings/company', element: guarded(<CompanySettingsPage />, 'settings.company') },
               { path: 'settings/users', element: guarded(<UsersSettingsPage />, 'settings.users') },

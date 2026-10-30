@@ -3,16 +3,18 @@ import { useQuery } from '@tanstack/react-query'
 import { Badge, Button, Card, SectionTitle, Skeleton } from '@/components/ui/base'
 import { reportService } from '@/services/documents'
 import { useHeader, PageHeaderBar } from '@/components/layout/page-header'
+import { useAuth } from '@/app/auth-context'
 import { db } from '@/services/demo/store'
 import { monthStartFromAnchor, notifyReportExport } from '@/modules/reports/reports-shared'
 
 export function AttendanceReportsPage() {
   useHeader('Attendance report', [{ label: 'Workspace' }, { label: 'Reports', to: '/reports' }, { label: 'Attendance' }])
+  const { session } = useAuth()
   const [range, setRange] = useState({ from: monthStartFromAnchor(db.today), to: db.today })
 
   const report = useQuery({
-    queryKey: ['reports', 'attendance', range.from, range.to],
-    queryFn: () => reportService.attendanceByDepartment(range.from, range.to),
+    queryKey: ['reports', 'attendance', range.from, range.to, session?.userId, session?.role],
+    queryFn: () => reportService.attendanceByDepartment(range.from, range.to, session),
   })
 
   return (

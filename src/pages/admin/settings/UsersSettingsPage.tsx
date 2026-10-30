@@ -42,9 +42,9 @@ export function UsersSettingsPage() {
   const [actionError, setActionError] = useState('')
 
   const users = useQuery({
-    queryKey: ['settings', 'users', { search, page }],
+    queryKey: ['settings', 'users', { search, page }, session?.userId, session?.role],
     placeholderData: keepPreviousData,
-    queryFn: () => settingsService.users(search, page, 10),
+    queryFn: () => settingsService.users(search, page, 10, session),
   })
 
   const refresh = () => {

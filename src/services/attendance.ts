@@ -1,5 +1,6 @@
-import { db } from './demo/store'
+import { db, getActiveSession } from './demo/store'
 import type { AttendanceMonthSummary, AttendanceRecord, PaginatedResult, SessionUser } from '@/types/domain'
+import { hasPermission } from '@/types/rbac'
 import { deriveAttendanceHint, parseClockToMinutes } from '@/utils/npt'
 
 export interface AttendanceListParams {
@@ -14,12 +15,20 @@ export interface AttendanceListParams {
   pageSize?: number
 }
 
+function resolveViewer(viewer?: SessionUser | null): SessionUser | null {
+  return viewer !== undefined ? viewer : getActiveSession()
+}
+
 export const attendanceService = {
   async list(params: AttendanceListParams = {}, viewer?: SessionUser | null): Promise<PaginatedResult<AttendanceRecord>> {
-    if (viewer?.role === 'EMPLOYEE' && params.employeeId && params.employeeId !== viewer.employeeId) {
+    const v = resolveViewer(viewer)
+    if (!v) {
+      throw new Error('Unauthorized: Authentication required to view attendance records.')
+    }
+    if (v.role === 'EMPLOYEE' && params.employeeId && params.employeeId !== v.employeeId) {
       throw new Error('Unauthorized: Employees can only view their own attendance records.')
     }
-    const effectiveEmployeeId = viewer?.role === 'EMPLOYEE' ? viewer.employeeId : params.employeeId
+    const effectiveEmployeeId = v.role === 'EMPLOYEE' ? v.employeeId : params.employeeId
     const page = params.page ?? 1
     const pageSize = params.pageSize ?? 20
     const q = (params.search ?? '').trim().toLowerCase()
@@ -43,7 +52,11 @@ export const attendanceService = {
   },
 
   async summaryForMonth(employeeId: string, month: string, viewer?: SessionUser | null): Promise<AttendanceMonthSummary> {
-    if (viewer?.role === 'EMPLOYEE' && viewer.employeeId !== employeeId) {
+    const v = resolveViewer(viewer)
+    if (!v) {
+      throw new Error('Unauthorized: Authentication required to access attendance summary.')
+    }
+    if (v.role === 'EMPLOYEE' && v.employeeId !== employeeId) {
       throw new Error('Unauthorized: Employees can only access their own attendance summary.')
     }
     const rows = db.attendance.filter((r) => r.employeeId === employeeId && r.date.startsWith(month))
@@ -65,20 +78,31 @@ export const attendanceService = {
   },
 
   async historyFor(employeeId: string, date: string, viewer?: SessionUser | null): Promise<AttendanceRecord[]> {
-    if (viewer?.role === 'EMPLOYEE' && viewer.employeeId !== employeeId) {
+    const v = resolveViewer(viewer)
+    if (!v) {
+      throw new Error('Unauthorized: Authentication required to view attendance history.')
+    }
+    if (v.role === 'EMPLOYEE' && v.employeeId !== employeeId) {
       throw new Error('Unauthorized: Employees can only view their own attendance history.')
     }
     return db.attendance.filter((r) => r.employeeId === employeeId && r.date === date)
   },
 
-  async addMissingRecord(input: {
-    employeeId: string
-    date: string
-    checkIn: string
-    checkOut: string
-    reason: string
-    shiftLabel?: string
-  }): Promise<AttendanceRecord> {
+  async addMissingRecord(
+    input: {
+      employeeId: string
+      date: string
+      checkIn: string
+      checkOut: string
+      reason: string
+      shiftLabel?: string
+    },
+    viewer?: SessionUser | null,
+  ): Promise<AttendanceRecord> {
+    const v = resolveViewer(viewer)
+    if (!v || !hasPermission(v, 'attendance.write')) {
+      throw new Error('Unauthorized: Only HR Admin or Super Admin can add manual attendance records.')
+    }
     const emp = db.employees.find((e) => e.id === input.employeeId)
     const hint = deriveAttendanceHint({
       date: input.date,
@@ -106,7 +130,7 @@ export const attendanceService = {
       id: `AUD-${Date.now()}`,
       action: 'attendance.added',
       module: 'Attendance',
-      actor: 'Admin',
+      actor: v.name,
       target: `${input.employeeId} · ${input.date}`,
       detail: `Added manual record (${input.checkIn}–${input.checkOut}) · reason: ${input.reason}`,
       at: new Date().toISOString(),
@@ -114,13 +138,20 @@ export const attendanceService = {
     return record
   },
 
-  async correctRecord(input: {
-    employeeId: string
-    date: string
-    checkIn: string
-    checkOut: string
-    reason: string
-  }): Promise<AttendanceRecord> {
+  async correctRecord(
+    input: {
+      employeeId: string
+      date: string
+      checkIn: string
+      checkOut: string
+      reason: string
+    },
+    viewer?: SessionUser | null,
+  ): Promise<AttendanceRecord> {
+    const v = resolveViewer(viewer)
+    if (!v || !hasPermission(v, 'attendance.write')) {
+      throw new Error('Unauthorized: Only HR Admin or Super Admin can correct attendance records.')
+    }
     const existing = db.attendance.find((r) => r.employeeId === input.employeeId && r.date === input.date)
     if (!existing) {
       throw new Error('No existing record found for this employee and date.')
@@ -142,7 +173,7 @@ export const attendanceService = {
       id: `AUD-${Date.now()}`,
       action: 'attendance.corrected',
       module: 'Attendance',
-      actor: 'Admin',
+      actor: v.name,
       target: `${input.employeeId} · ${input.date}`,
       detail: `Corrected to v${existing.version} (${input.checkIn}–${input.checkOut}) · reason: ${input.reason}`,
       at: new Date().toISOString(),
@@ -150,3 +181,4 @@ export const attendanceService = {
     return existing
   },
 }
+

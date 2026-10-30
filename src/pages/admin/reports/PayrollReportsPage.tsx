@@ -3,6 +3,7 @@ import { Button, Card, SectionTitle, Skeleton } from '@/components/ui/base'
 import { StatCard } from '@/components/data-display/stat-card'
 import { StatusBadge, payrollRunTone } from '@/components/data-display/status'
 import { payrollService } from '@/services/payroll'
+import { useAuth } from '@/app/auth-context'
 import { useHeader, PageHeaderBar } from '@/components/layout/page-header'
 import { ReportsExportNote, notifyReportExport } from '@/modules/reports/reports-shared'
 import { formatNpr } from '@/utils/npr'
@@ -10,8 +11,12 @@ import type { PayrollRun } from '@/types/domain'
 
 export function PayrollReportsPage() {
   useHeader('Payroll report', [{ label: 'Workspace' }, { label: 'Reports', to: '/reports' }, { label: 'Payroll' }])
+  const { session } = useAuth()
 
-  const runs = useQuery({ queryKey: ['reports', 'payroll', 'runs'], queryFn: () => payrollService.runs('', 1, 50) })
+  const runs = useQuery({
+    queryKey: ['reports', 'payroll', 'runs', session?.userId, session?.role],
+    queryFn: () => payrollService.runs('', 1, 50, session),
+  })
 
   const rows: PayrollRun[] = [...(runs.data?.items ?? [])].sort((a, b) => b.period.localeCompare(a.period))
   const ytdNet = rows.reduce((acc, r) => acc + r.totalNetPaisa, 0)

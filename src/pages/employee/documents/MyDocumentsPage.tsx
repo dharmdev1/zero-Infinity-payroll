@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { Badge, Button, Card, InfoNote, SectionTitle, Skeleton } from '@/components/ui/base'
 import { employeeService } from '@/services/employees'
 import { documentService } from '@/services/documents'
+import { useAuth } from '@/app/auth-context'
 import { useHeader, PageHeaderBar } from '@/components/layout/page-header'
 import { formatNptDate } from '@/utils/npt'
 import { publishBackendNotice } from '@/utils/backend-ops'
@@ -10,10 +11,18 @@ import { useMyEmployeeId } from '@/modules/employees/self-shared'
 
 export function MyDocumentsPage() {
   useHeader('My documents', [{ label: 'Workspace' }, { label: 'My documents' }])
+  const { session } = useAuth()
   const employeeId = useMyEmployeeId()
 
-  const docs = useQuery({ queryKey: ['employees', 'me-docs', employeeId], queryFn: () => employeeService.documents(employeeId), enabled: !!employeeId })
-  const shared = useQuery({ queryKey: ['documents', 'my-shared'], queryFn: () => documentService.list({ category: 'Policy', page: 1, pageSize: 8 }) })
+  const docs = useQuery({
+    queryKey: ['employees', 'me-docs', employeeId, session?.userId],
+    queryFn: () => employeeService.documents(employeeId, session),
+    enabled: !!employeeId,
+  })
+  const shared = useQuery({
+    queryKey: ['documents', 'my-shared', session?.role],
+    queryFn: () => documentService.list({ category: 'Policy', page: 1, pageSize: 8 }, session),
+  })
 
   return (
     <div className="space-y-4">

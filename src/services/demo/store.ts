@@ -15,6 +15,7 @@ import type {
   PayrollRun,
   Payslip,
   Project,
+  SessionUser,
   WorkTask,
 } from '@/types/domain'
 
@@ -682,3 +683,41 @@ export const db = {
   auditLogs: AUDIT_LOGS,
   announcements: ANNOUNCEMENTS,
 }
+
+let currentActiveSession: SessionUser | null = null
+
+export function getActiveSession(): SessionUser | null {
+  if (!currentActiveSession) return null
+
+  const user =
+    USERS.find((u) => u.id === currentActiveSession!.userId) ??
+    USERS.find((u) => u.employeeId === currentActiveSession!.employeeId)
+  const empId = user?.employeeId ?? currentActiveSession.employeeId
+  const emp = EMPLOYEES.find((e) => e.id === empId)
+
+  if (emp && (emp.status === 'TERMINATED' || emp.status === 'INACTIVE' || emp.status === 'ARCHIVED')) {
+    currentActiveSession = null
+    return null
+  }
+
+  if (user && user.status === 'DISABLED') {
+    currentActiveSession = null
+    return null
+  }
+
+  const authoritativeRole = user?.role ?? currentActiveSession.role
+  if (authoritativeRole !== currentActiveSession.role) {
+    currentActiveSession = {
+      ...currentActiveSession,
+      role: authoritativeRole,
+    }
+  }
+
+  return currentActiveSession
+}
+
+export function setActiveSession(session: SessionUser | null): void {
+  currentActiveSession = session
+}
+
+

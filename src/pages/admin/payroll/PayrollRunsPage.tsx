@@ -7,19 +7,21 @@ import { DataTable, Pagination } from '@/components/data-display/table'
 import type { Column } from '@/components/data-display/table'
 import { StatusBadge, payrollRunTone } from '@/components/data-display/status'
 import { payrollService } from '@/services/payroll'
+import { useAuth } from '@/app/auth-context'
 import { useHeader, PageHeaderBar } from '@/components/layout/page-header'
 import type { PayrollRun } from '@/types/domain'
 import { formatNpr } from '@/utils/npr'
 
 export function PayrollRunsPage() {
   useHeader('Payroll runs', [{ label: 'Workspace' }, { label: 'Payroll', to: '/payroll' }, { label: 'Runs' }])
+  const { session } = useAuth()
   const [status, setStatus] = useState('')
   const [page, setPage] = useState(1)
 
   const runs = useQuery({
-    queryKey: ['payroll', 'runs-list', { status, page }],
+    queryKey: ['payroll', 'runs-list', { status, page, role: session?.role }],
     placeholderData: keepPreviousData,
-    queryFn: () => payrollService.runs(status, page, 10),
+    queryFn: () => payrollService.runs(status, page, 10, session),
   })
 
   const columns: Array<Column<PayrollRun>> = [

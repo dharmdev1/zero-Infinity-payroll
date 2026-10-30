@@ -36,7 +36,7 @@ export function CompanySettingsPage() {
 
   const handleFieldChange = (patch: Partial<CompanyProfileSettings>) => {
     setSavedNotice(false)
-    settingsService.updateCompanyProfile(patch)
+    settingsService.updateCompanyProfile(patch, { viewer: session })
   }
 
   const handleLegalNameChange = (nextLegalName: string) => {
@@ -68,6 +68,7 @@ export function CompanySettingsPage() {
     settingsService.updateCompanyProfile(company, {
       actor: session?.name ?? 'Admin',
       recordAudit: true,
+      viewer: session,
     })
     void queryClient.invalidateQueries({ queryKey: ['settings', 'audit'] })
     setSavedNotice(true)

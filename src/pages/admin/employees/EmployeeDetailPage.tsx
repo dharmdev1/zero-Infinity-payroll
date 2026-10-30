@@ -441,7 +441,7 @@ function MoreActions({
           <MenuItem
             label="Edit profile"
             description="Update employee information"
-            disabled={!can('employees.edit')}
+            disabled={!can('employees.edit') || isHrTargetingAdmin}
             onClick={() => {
               setOpen(false)
               navigate(`/employees/${employee.id}/edit`)
@@ -450,17 +450,27 @@ function MoreActions({
           <MenuItem
             label="Change status"
             description="Active or probation"
-            disabled={!can('employees.status')}
+            disabled={
+              !can('employees.status') ||
+              isHrTargetingAdmin ||
+              employee.status === 'TERMINATED' ||
+              employee.status === 'INACTIVE' ||
+              employee.status === 'ARCHIVED'
+            }
             onClick={() => {
               setOpen(false)
               onStatus()
             }}
           />
-          {employee.status === 'INACTIVE' ? (
+          {employee.status === 'INACTIVE' || employee.status === 'TERMINATED' || employee.status === 'ARCHIVED' ? (
             <MenuItem
               label="Reactivate account"
               description="Restore active status & login"
-              disabled={!can('employees.deactivate') || isHrTargetingAdmin}
+              disabled={
+                !can('employees.deactivate') ||
+                isHrTargetingAdmin ||
+                (employee.status === 'ARCHIVED' && !can('employees.delete'))
+              }
               onClick={() => {
                 setOpen(false)
                 onReactivate()
