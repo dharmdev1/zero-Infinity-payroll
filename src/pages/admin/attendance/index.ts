@@ -1,0 +1,5 @@
+export { AttendanceDashboardTab } from './DashboardTab'
+export { AttendanceRecordsTab } from './RecordsTab'
+export { AttendanceCalendarTab } from './CalendarTab'
+export { AttendanceManualTab } from './ManualTab'
+export { AttendanceReportsTab } from './ReportsTab'

@@ -1,0 +1,7 @@
+export { EmployeeDashboardPage, EmployeeDashboard } from './dashboard'
+export { MyProfilePage } from './profile/MyProfilePage'
+export { MyAttendancePage } from './attendance/MyAttendancePage'
+export { MyLeavePage } from './leave/MyLeavePage'
+export { MyTasksPage } from './tasks/MyTasksPage'
+export { MyDocumentsPage } from './documents/MyDocumentsPage'
+export { MyPayslipsPage } from './payslips/MyPayslipsPage'

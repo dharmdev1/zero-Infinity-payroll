@@ -1,0 +1,5 @@
+export { CompanySettingsPage } from './CompanySettingsPage'
+export { UsersSettingsPage } from './UsersSettingsPage'
+export { RolesSettingsPage } from './RolesSettingsPage'
+export { PermissionsSettingsPage } from './PermissionsSettingsPage'
+export { AuditLogsPage } from './AuditLogsPage'
